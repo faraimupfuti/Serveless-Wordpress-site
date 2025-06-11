@@ -1,0 +1,606 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Serverless WordPress site with Lambda, RDS, VPC, Route 53, and CloudWatch",
+  "Parameters": {
+    "DomainName": {
+      "Type": "String",
+      "Description": "Domain name for the WordPress site",
+      "Default": "example.com"
+    },
+    "DBUsername": {
+      "Type": "String",
+      "Description": "Database username",
+      "Default": "wordpress"
+    },
+    "DBPassword": {
+      "Type": "String",
+      "Description": "Database password",
+      "NoEcho": true,
+      "MinLength": 8
+    },
+    "Environment": {
+      "Type": "String",
+      "Description": "Environment name",
+      "Default": "prod",
+      "AllowedValues": ["dev", "staging", "prod"]
+    }
+  },
+  "Resources": {
+    "VPC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-VPC"}
+          }
+        ]
+      }
+    },
+    "InternetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-IGW"}
+          }
+        ]
+      }
+    },
+    "AttachGateway": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "InternetGatewayId": {"Ref": "InternetGateway"}
+      }
+    },
+    "PublicSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "CidrBlock": "10.0.1.0/24",
+        "AvailabilityZone": {"Fn::Select": [0, {"Fn::GetAZs": ""}]},
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PublicSubnet1"}
+          }
+        ]
+      }
+    },
+    "PublicSubnet2": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "CidrBlock": "10.0.2.0/24",
+        "AvailabilityZone": {"Fn::Select": [1, {"Fn::GetAZs": ""}]},
+        "MapPublicIpOnLaunch": true,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PublicSubnet2"}
+          }
+        ]
+      }
+    },
+    "PrivateSubnet1": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "CidrBlock": "10.0.3.0/24",
+        "AvailabilityZone": {"Fn::Select": [0, {"Fn::GetAZs": ""}]},
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PrivateSubnet1"}
+          }
+        ]
+      }
+    },
+    "PrivateSubnet2": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "CidrBlock": "10.0.4.0/24",
+        "AvailabilityZone": {"Fn::Select": [1, {"Fn::GetAZs": ""}]},
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PrivateSubnet2"}
+          }
+        ]
+      }
+    },
+    "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PublicRouteTable"}
+          }
+        ]
+      }
+    },
+    "PublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": "AttachGateway",
+      "Properties": {
+        "RouteTableId": {"Ref": "PublicRouteTable"},
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "GatewayId": {"Ref": "InternetGateway"}
+      }
+    },
+    "PublicSubnetRouteTableAssociation1": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {"Ref": "PublicSubnet1"},
+        "RouteTableId": {"Ref": "PublicRouteTable"}
+      }
+    },
+    "PublicSubnetRouteTableAssociation2": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "SubnetId": {"Ref": "PublicSubnet2"},
+        "RouteTableId": {"Ref": "PublicRouteTable"}
+      }
+    },
+    "NATGateway1EIP": {
+      "Type": "AWS::EC2::EIP",
+      "DependsOn": "AttachGateway",
+      "Properties": {
+        "Domain": "vpc"
+      }
+    },
+    "NATGateway1": {
+      "Type": "AWS::EC2::NatGateway",
+      "Properties": {
+        "AllocationId": {"Fn::GetAtt": ["NATGateway1EIP", "AllocationId"]},
+        "SubnetId": {"Ref": "PublicSubnet1"}
+      }
+    },
+    "PrivateRouteTable1": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "VpcId": {"Ref": "VPC"},
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-PrivateRouteTable1"}
+          }
+        ]
+      }
+    },
+    "DefaultPrivateRoute1": {
+      "Type": "AWS::EC2::Route",
+      "Properties": {
+        "RouteTableId": {"Ref": "PrivateRouteTable1"},
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "NatGatewayId": {"Ref": "NATGateway1"}
+      }
+    },
+    "PrivateSubnetRouteTableAssociation1": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {"Ref": "PrivateRouteTable1"},
+        "SubnetId": {"Ref": "PrivateSubnet1"}
+      }
+    },
+    "PrivateSubnetRouteTableAssociation2": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {"Ref": "PrivateRouteTable1"},
+        "SubnetId": {"Ref": "PrivateSubnet2"}
+      }
+    },
+    "DatabaseSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for RDS MySQL database",
+        "VpcId": {"Ref": "VPC"},
+        "SecurityGroupIngress": [
+          {
+            "IpProtocol": "tcp",
+            "FromPort": 3306,
+            "ToPort": 3306,
+            "SourceSecurityGroupId": {"Ref": "LambdaSecurityGroup"}
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-DatabaseSG"}
+          }
+        ]
+      }
+    },
+    "LambdaSecurityGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for Lambda functions",
+        "VpcId": {"Ref": "VPC"},
+        "SecurityGroupEgress": [
+          {
+            "IpProtocol": "-1",
+            "CidrIp": "0.0.0.0/0"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-LambdaSG"}
+          }
+        ]
+      }
+    },
+    "DBSubnetGroup": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": "Subnet group for RDS database",
+        "SubnetIds": [
+          {"Ref": "PrivateSubnet1"},
+          {"Ref": "PrivateSubnet2"}
+        ],
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-DBSubnetGroup"}
+          }
+        ]
+      }
+    },
+    "WordPressDatabase": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "DBInstanceIdentifier": {"Fn::Sub": "${AWS::StackName}-wordpress-db"},
+        "DBName": "wordpress",
+        "Engine": "mysql",
+        "EngineVersion": "8.0.35",
+        "DBInstanceClass": "db.t3.micro",
+        "AllocatedStorage": 20,
+        "StorageType": "gp2",
+        "MasterUsername": {"Ref": "DBUsername"},
+        "MasterUserPassword": {"Ref": "DBPassword"},
+        "VPCSecurityGroups": [{"Ref": "DatabaseSecurityGroup"}],
+        "DBSubnetGroupName": {"Ref": "DBSubnetGroup"},
+        "BackupRetentionPeriod": 7,
+        "MultiAZ": false,
+        "PubliclyAccessible": false,
+        "StorageEncrypted": true,
+        "DeletionProtection": false,
+        "Tags": [
+          {
+            "Key": "Name",
+            "Value": {"Fn::Sub": "${AWS::StackName}-WordPressDB"}
+          }
+        ]
+      }
+    },
+    "LambdaExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+        ],
+        "Policies": [
+          {
+            "PolicyName": "WordPressLambdaPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                    "s3:DeleteObject"
+                  ],
+                  "Resource": [
+                    {"Fn::Sub": "${WordPressS3Bucket}/*"}
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "WordPressS3Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": {"Fn::Sub": "${AWS::StackName}-wordpress-assets-${AWS::Region}"},
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": false,
+          "BlockPublicPolicy": false,
+          "IgnorePublicAcls": false,
+          "RestrictPublicBuckets": false
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        }
+      }
+    },
+    "WordPressS3BucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {"Ref": "WordPressS3Bucket"},
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Sid": "PublicReadGetObject",
+              "Effect": "Allow",
+              "Principal": "*",
+              "Action": "s3:GetObject",
+              "Resource": {"Fn::Sub": "${WordPressS3Bucket}/wp-content/uploads/*"}
+            }
+          ]
+        }
+      }
+    },
+    "WordPressLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {"Fn::Sub": "${AWS::StackName}-wordpress"},
+        "Runtime": "php81",
+        "Handler": "index.php",
+        "Role": {"Fn::GetAtt": ["LambdaExecutionRole", "Arn"]},
+        "Code": {
+          "ZipFile": "<?php\n// WordPress Lambda Handler\n// This is a placeholder - you'll need to deploy actual WordPress code\necho 'WordPress Lambda Function - Deploy your WordPress code here';\n?>"
+        },
+        "Description": "WordPress Lambda Function",
+        "Timeout": 30,
+        "MemorySize": 512,
+        "Environment": {
+          "Variables": {
+            "DB_HOST": {"Fn::GetAtt": ["WordPressDatabase", "Endpoint.Address"]},
+            "DB_NAME": "wordpress",
+            "DB_USER": {"Ref": "DBUsername"},
+            "DB_PASSWORD": {"Ref": "DBPassword"},
+            "WP_S3_BUCKET": {"Ref": "WordPressS3Bucket"},
+            "WP_HOME": {"Fn::Sub": "https://${DomainName}"},
+            "WP_SITEURL": {"Fn::Sub": "https://${DomainName}"}
+          }
+        },
+        "VpcConfig": {
+          "SecurityGroupIds": [{"Ref": "LambdaSecurityGroup"}],
+          "SubnetIds": [
+            {"Ref": "PrivateSubnet1"},
+            {"Ref": "PrivateSubnet2"}
+          ]
+        }
+      }
+    },
+    "ApiGateway": {
+      "Type": "AWS::ApiGatewayV2::Api",
+      "Properties": {
+        "Name": {"Fn::Sub": "${AWS::StackName}-wordpress-api"},
+        "Description": "API Gateway for WordPress Lambda",
+        "ProtocolType": "HTTP",
+        "CorsConfiguration": {
+          "AllowCredentials": true,
+          "AllowHeaders": ["*"],
+          "AllowMethods": ["*"],
+          "AllowOrigins": ["*"]
+        }
+      }
+    },
+    "ApiGatewayIntegration": {
+      "Type": "AWS::ApiGatewayV2::Integration",
+      "Properties": {
+        "ApiId": {"Ref": "ApiGateway"},
+        "Description": "Lambda proxy integration",
+        "IntegrationType": "AWS_PROXY",
+        "IntegrationUri": {"Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${WordPressLambdaFunction.Arn}/invocations"},
+        "PayloadFormatVersion": "2.0"
+      }
+    },
+    "ApiGatewayRoute": {
+      "Type": "AWS::ApiGatewayV2::Route",
+      "Properties": {
+        "ApiId": {"Ref": "ApiGateway"},
+        "RouteKey": "ANY /{proxy+}",
+        "AuthorizationType": "NONE",
+        "Target": {"Fn::Sub": "integrations/${ApiGatewayIntegration}"}
+      }
+    },
+    "ApiGatewayStage": {
+      "Type": "AWS::ApiGatewayV2::Stage",
+      "Properties": {
+        "ApiId": {"Ref": "ApiGateway"},
+        "DeploymentId": {"Ref": "ApiGatewayDeployment"},
+        "StageName": {"Ref": "Environment"},
+        "Description": {"Fn::Sub": "${Environment} stage"},
+        "AccessLogSettings": {
+          "DestinationArn": {"Fn::GetAtt": ["ApiGatewayLogGroup", "Arn"]},
+          "Format": "$context.requestId $context.status $context.error.message $context.error.messageString"
+        }
+      }
+    },
+    "ApiGatewayDeployment": {
+      "Type": "AWS::ApiGatewayV2::Deployment",
+      "DependsOn": ["ApiGatewayRoute"],
+      "Properties": {
+        "ApiId": {"Ref": "ApiGateway"},
+        "Description": "WordPress API deployment"
+      }
+    },
+    "LambdaApiGatewayInvoke": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {"Ref": "WordPressLambdaFunction"},
+        "Action": "lambda:InvokeFunction",
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {"Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*"}
+      }
+    },
+    "CloudFrontDistribution": {
+      "Type": "AWS::CloudFront::Distribution",
+      "Properties": {
+        "DistributionConfig": {
+          "Origins": [
+            {
+              "DomainName": {"Fn::Sub": "${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com"},
+              "Id": "WordPressApiOrigin",
+              "OriginPath": {"Fn::Sub": "/${Environment}"},
+              "CustomOriginConfig": {
+                "HTTPPort": 443,
+                "HTTPSPort": 443,
+                "OriginProtocolPolicy": "https-only"
+              }
+            },
+            {
+              "DomainName": {"Fn::GetAtt": ["WordPressS3Bucket", "RegionalDomainName"]},
+              "Id": "S3Origin",
+              "S3OriginConfig": {
+                "OriginAccessIdentity": ""
+              }
+            }
+          ],
+          "Enabled": true,
+          "DefaultCacheBehavior": {
+            "AllowedMethods": ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"],
+            "TargetOriginId": "WordPressApiOrigin",
+            "ForwardedValues": {
+              "QueryString": true,
+              "Headers": ["*"]
+            },
+            "ViewerProtocolPolicy": "redirect-to-https",
+            "MinTTL": 0,
+            "DefaultTTL": 0,
+            "MaxTTL": 0
+          },
+          "CacheBehaviors": [
+            {
+              "PathPattern": "/wp-content/uploads/*",
+              "TargetOriginId": "S3Origin",
+              "ForwardedValues": {
+                "QueryString": false
+              },
+              "ViewerProtocolPolicy": "redirect-to-https",
+              "MinTTL": 86400,
+              "DefaultTTL": 86400,
+              "MaxTTL": 31536000
+            }
+          ],
+          "Comment": "WordPress CloudFront Distribution",
+          "DefaultRootObject": "index.php",
+          "Aliases": [{"Ref": "DomainName"}],
+          "ViewerCertificate": {
+            "AcmCertificateArn": {"Ref": "SSLCertificate"},
+            "SslSupportMethod": "sni-only"
+          }
+        }
+      }
+    },
+    "HostedZone": {
+      "Type": "AWS::Route53::HostedZone",
+      "Properties": {
+        "Name": {"Ref": "DomainName"},
+        "HostedZoneConfig": {
+          "Comment": {"Fn::Sub": "Hosted zone for ${DomainName}"}
+        }
+      }
+    },
+    "DNSRecord": {
+      "Type": "AWS::Route53::RecordSet",
+      "Properties": {
+        "HostedZoneId": {"Ref": "HostedZone"},
+        "Name": {"Ref": "DomainName"},
+        "Type": "A",
+        "AliasTarget": {
+          "DNSName": {"Fn::GetAtt": ["CloudFrontDistribution", "DomainName"]},
+          "HostedZoneId": "Z2FDTNDATAQYW2"
+        }
+      }
+    },
+    "SSLCertificate": {
+      "Type": "AWS::CertificateManager::Certificate",
+      "Properties": {
+        "DomainName": {"Ref": "DomainName"},
+        "ValidationMethod": "DNS",
+        "DomainValidationOptions": [
+          {
+            "DomainName": {"Ref": "DomainName"},
+            "HostedZoneId": {"Ref": "HostedZone"}
+          }
+        ]
+      }
+    },
+    "ApiGatewayLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {"Fn::Sub": "/aws/apigateway/${AWS::StackName}"},
+        "RetentionInDays": 14
+      }
+    },
+    "LambdaLogGroup": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {"Fn::Sub": "/aws/lambda/${WordPressLambdaFunction}"},
+        "RetentionInDays": 14
+      }
+    },
+    "CloudWatchDashboard": {
+      "Type": "AWS::CloudWatch::Dashboard",
+      "Properties": {
+        "DashboardName": {"Fn::Sub": "${AWS::StackName}-WordPress-Dashboard"},
+        "DashboardBody": {
+          "Fn::Sub": "{\n  \"widgets\": [\n    {\n      \"type\": \"metric\",\n      \"x\": 0,\n      \"y\": 0,\n      \"width\": 12,\n      \"height\": 6,\n      \"properties\": {\n        \"metrics\": [\n          [ \"AWS/Lambda\", \"Duration\", \"FunctionName\", \"${WordPressLambdaFunction}\" ],\n          [ \".\", \"Errors\", \".\", \".\" ],\n          [ \".\", \"Invocations\", \".\", \".\" ]\n        ],\n        \"view\": \"timeSeries\",\n        \"stacked\": false,\n        \"region\": \"${AWS::Region}\",\n        \"title\": \"Lambda Metrics\",\n        \"period\": 300\n      }\n    },\n    {\n      \"type\": \"metric\",\n      \"x\": 0,\n      \"y\": 6,\n      \"width\": 12,\n      \"height\": 6,\n      \"properties\": {\n        \"metrics\": [\n          [ \"AWS/RDS\", \"CPUUtilization\", \"DBInstanceIdentifier\", \"${WordPressDatabase}\" ],\n          [ \".\", \"DatabaseConnections\", \".\", \".\" ]\n        ],\n        \"view\": \"timeSeries\",\n        \"stacked\": false,\n        \"region\": \"${AWS::Region}\",\n        \"title\": \"RDS Metrics\",\n        \"period\": 300\n      }\n    }\n  ]\n}"
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "WebsiteURL": {
+      "Description": "WordPress Website URL",
+      "Value": {"Fn::Sub": "https://${DomainName}"}
+    },
+    "CloudFrontDistributionId": {
+      "Description": "CloudFront Distribution ID",
+      "Value": {"Ref": "CloudFrontDistribution"}
+    },
+    "DatabaseEndpoint": {
+      "Description": "RDS Database Endpoint",
+      "Value": {"Fn::GetAtt": ["WordPressDatabase", "Endpoint.Address"]}
+    },
+    "S3BucketName": {
+      "Description": "S3 Bucket for WordPress assets",
+      "Value": {"Ref": "WordPressS3Bucket"}
+    },
+    "ApiGatewayURL": {
+      "Description": "API Gateway URL",
+      "Value": {"Fn::Sub": "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"}
+    },
+    "NameServers": {
+      "Description": "Route 53 Name Servers",
+      "Value": {"Fn::Join": [",", {"Fn::GetAtt": ["HostedZone", "NameServers"]}]}
+    }
+  }
+}
